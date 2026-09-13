@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
   issues: read
   pull-requests: read
 
@@ -133,6 +134,10 @@ jobs:
               -m "Release candidate for milestone #${MILESTONE_NUMBER}"
             git push origin "$RC_TAG"
           fi
+      - name: Publish Release Pages snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run environment-pages.yml --ref dev -f source_ref=release
       - name: Generate release notes
         env:
           GITHUB_TOKEN: ${{ github.token }}

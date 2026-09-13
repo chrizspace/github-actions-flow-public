@@ -1,0 +1,170 @@
+name: Milestone release
+
+on:
+  milestone:
+    types:
+      - closed
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: version-dev
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  release-candidate:
+    name: Promote milestone to UAT
+    runs-on: ubuntu-latest
+    environment:
+      name: uat
+    steps:
+      - name: Reject milestones with open issues
+        env:
+          OPEN_ISSUES: ${{ github.event.milestone.open_issues }}
+        run: |
+          if [[ "$OPEN_ISSUES" != "0" ]]; then
+            echo "::error::Close all milestone issues before closing the milestone."
+            exit 1
+          fi
+      - name: Check out Dev
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Detect an existing milestone transaction
+        id: transaction
+        env:
+          MILESTONE_NUMBER: ${{ github.event.milestone.number }}
+        run: |
+          existing_commit="$(
+            git log --format=%H \
+              --grep="^chore(release): prepare milestone #${MILESTONE_NUMBER} as v" -1
+          )"
+          echo "existing_commit=${existing_commit}" >> "$GITHUB_OUTPUT"
+      - name: Validate milestone contents
+        if: steps.transaction.outputs.existing_commit == ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MILESTONE_NUMBER: ${{ github.event.milestone.number }}
+        run: node scripts/validate-milestone.mjs "$MILESTONE_NUMBER"
+      - name: Prepare milestone version
+        id: version
+        env:
+          MILESTONE_NUMBER: ${{ github.event.milestone.number }}
+          MILESTONE_TITLE: ${{ github.event.milestone.title }}
+          EXISTING_COMMIT: ${{ steps.transaction.outputs.existing_commit }}
+        run: |
+          marker="chore(release): prepare milestone #${MILESTONE_NUMBER}"
+
+          if [[ -n "$EXISTING_COMMIT" ]]; then
+            version="$(git show "${EXISTING_COMMIT}:VERSION" | tr -d '\n')"
+            source_sha="$EXISTING_COMMIT"
+          else
+            level="minor"
+            if [[ "$MILESTONE_TITLE" == "Major: "* ]]; then
+              level="major"
+            fi
+            version="$(node scripts/version.mjs bump "$level" --write)"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add VERSION
+            git commit -m "${marker} as v${version}"
+            git push origin HEAD:dev
+            source_sha="$(git rev-parse HEAD)"
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "rc=v${version}-rc.1" >> "$GITHUB_OUTPUT"
+          echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+      - name: Promote Dev to Release
+        id: promotion
+        env:
+          MILESTONE_NUMBER: ${{ github.event.milestone.number }}
+          SOURCE_SHA: ${{ steps.version.outputs.source_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git fetch origin release:refs/remotes/origin/release
+          git switch --force-create release origin/release
+          promotion_message="chore(release): promote milestone #${MILESTONE_NUMBER} as v${VERSION}"
+          promotion_sha="$(
+            git log --format=%H --fixed-strings --grep="$promotion_message" -1
+          )"
+          if git merge-base --is-ancestor "$SOURCE_SHA" HEAD; then
+            if [[ -z "$promotion_sha" ]]; then
+              echo "::error::Milestone source is in Release without its promotion marker."
+              exit 1
+            fi
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git merge --no-ff "$SOURCE_SHA" -m "$promotion_message"
+            git push origin HEAD:release
+            promotion_sha="$(git rev-parse HEAD)"
+          fi
+
+          if [[ "$promotion_sha" != "$(git rev-parse HEAD)" ]]; then
+            echo "::error::Release advanced after milestone #${MILESTONE_NUMBER}; refusing an old rerun."
+            exit 1
+          fi
+          echo "release_sha=${promotion_sha}" >> "$GITHUB_OUTPUT"
+      - name: Tag release candidate
+        env:
+          MILESTONE_NUMBER: ${{ github.event.milestone.number }}
+          RC_TAG: ${{ steps.version.outputs.rc }}
+          RELEASE_SHA: ${{ steps.promotion.outputs.release_sha }}
+        run: |
+          if git rev-parse "$RC_TAG" >/dev/null 2>&1; then
+            tag_sha="$(git rev-parse "${RC_TAG}^{commit}")"
+            if [[ "$tag_sha" != "$RELEASE_SHA" ]]; then
+              echo "::error::$RC_TAG points to $tag_sha, not milestone release $RELEASE_SHA."
+              exit 1
+            fi
+            echo "Release candidate tag $RC_TAG already points to this release."
+          else
+            git tag -a "$RC_TAG" "$RELEASE_SHA" \
+              -m "Release candidate for milestone #${MILESTONE_NUMBER}"
+            git push origin "$RC_TAG"
+          fi
+      - name: Generate release notes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MILESTONE_NUMBER: ${{ github.event.milestone.number }}
+        run: node scripts/release-notes.mjs "$MILESTONE_NUMBER" release-notes.md
+      - name: Build UAT artifact
+        env:
+          DEPLOY_ENVIRONMENT: uat
+        run: npm run build
+      - name: Record release metadata
+        env:
+          MILESTONE_NUMBER: ${{ github.event.milestone.number }}
+          MILESTONE_TITLE: ${{ github.event.milestone.title }}
+          RC_TAG: ${{ steps.version.outputs.rc }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            fs.writeFileSync("release-metadata.json", `${JSON.stringify({
+              milestone: Number(process.env.MILESTONE_NUMBER),
+              milestoneTitle: process.env.MILESTONE_TITLE,
+              rcTag: process.env.RC_TAG,
+              version: process.env.VERSION
+            }, null, 2)}\n`);
+          '
+      - name: Upload UAT artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: uat-${{ steps.version.outputs.rc }}-${{ github.run_id }}
+          path: |
+            dist
+            release-metadata.json
+            release-notes.md
+          if-no-files-found: error
+          retention-days: 30

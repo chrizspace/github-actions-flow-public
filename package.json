@@ -1,0 +1,10 @@
+{
+  "name": "github-actions-flow-poc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test",
+    "validate:workflows": "ruby -e \"require 'yaml'; Dir['.github/workflows/*.yml', '.github/ISSUE_TEMPLATE/*.yml'].each { |file| YAML.load_file(file); puts \\\"validated #{file}\\\" }\""
+  }
+}

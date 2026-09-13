@@ -1,0 +1,23 @@
+name: Feature
+description: Plan a new capability before creating its branch.
+title: "[Feature] "
+labels:
+  - "type:feature"
+body:
+  - type: markdown
+    attributes:
+      value: Assign this issue to a milestone before creating `feature/<issue>-description`.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the observable user or system outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List the conditions that prove the feature is complete.
+    validations:
+      required: true

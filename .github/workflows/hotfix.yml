@@ -1,0 +1,149 @@
+name: Production hotfix
+
+on:
+  pull_request_target:
+    branches:
+      - prod
+    types:
+      - closed
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: pages-production
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  hotfix:
+    name: Deploy and backport Hotfix
+    if: >-
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'hotfix/')
+    runs-on: ubuntu-latest
+    environment:
+      name: production-hotfix
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out Prod
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: prod
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Bump and tag hotfix version
+        id: version
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          marker="chore(version): bump hotfix to"
+          existing_commit="$(
+            git log --format=%H --grep="after PR #${PR_NUMBER}$" -1
+          )"
+
+          if [[ -n "$existing_commit" ]]; then
+            if [[ "$existing_commit" != "$(git rev-parse HEAD)" ]]; then
+              echo "::error::Prod advanced after hotfix PR #${PR_NUMBER}; refusing an old rerun."
+              exit 1
+            fi
+            version="$(git show "${existing_commit}:VERSION" | tr -d '\n')"
+          else
+            version="$(node scripts/version.mjs bump patch --write)"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add VERSION
+            git commit -m "${marker} v${version} after PR #${PR_NUMBER}"
+            git push origin HEAD:prod
+          fi
+
+          if git rev-parse "v${version}" >/dev/null 2>&1; then
+            tag_sha="$(git rev-parse "v${version}^{commit}")"
+            if [[ "$tag_sha" != "$(git rev-parse HEAD)" ]]; then
+              echo "::error::v${version} exists on another commit."
+              exit 1
+            fi
+          else
+            git tag -a "v${version}" -m "Production hotfix v${version}"
+            git push origin "v${version}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - name: Build hotfix site
+        env:
+          DEPLOY_ENVIRONMENT: production-hotfix
+        run: npm run build
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: dist
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+      - name: Open backport pull requests
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::RELEASE_TOKEN is required so bot-created PRs trigger CI."
+            exit 1
+          fi
+
+          git fetch origin \
+            dev:refs/remotes/origin/dev \
+            release:refs/remotes/origin/release
+          parent_count="$(git rev-list --parents -n 1 "$MERGE_SHA" | wc -w | tr -d ' ')"
+
+          for target in release dev; do
+            branch="backport/hotfix-${PR_NUMBER}-to-${target}"
+            existing_pr="$(
+              gh pr list \
+                --base "$target" \
+                --head "$branch" \
+                --state all \
+                --json number,state,mergedAt \
+                --jq 'if length == 0 then "" elif .[0].mergedAt != null then "MERGED:\(.[0].number)" else "\(.[0].state):\(.[0].number)" end'
+            )"
+            if [[ -n "$existing_pr" ]]; then
+              case "$existing_pr" in
+                OPEN:*|MERGED:*)
+                  echo "Backport ${existing_pr} for ${target} already exists."
+                  continue
+                  ;;
+                CLOSED:*)
+                  echo "::error::Backport ${existing_pr} for ${target} was closed without merging."
+                  exit 1
+                  ;;
+              esac
+            fi
+
+            if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+              git fetch origin "$branch:refs/remotes/origin/$branch"
+              git switch --force-create "$branch" "origin/$branch"
+            else
+              git switch --force-create "$branch" "origin/$target"
+
+              if [[ "$parent_count" -gt 2 ]]; then
+                git cherry-pick -m 1 "$MERGE_SHA"
+              else
+                git cherry-pick "$MERGE_SHA"
+              fi
+              git push origin "$branch"
+            fi
+
+            gh pr create \
+              --base "$target" \
+              --head "$branch" \
+              --title "Backport hotfix #${PR_NUMBER} to ${target}" \
+              --body "Automated no-version-bump backport of #${PR_NUMBER}." \
+              --label backport
+          done

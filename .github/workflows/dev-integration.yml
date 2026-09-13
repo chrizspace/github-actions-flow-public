@@ -1,0 +1,80 @@
+name: Dev integration
+
+on:
+  pull_request_target:
+    branches:
+      - dev
+    types:
+      - closed
+
+permissions:
+  contents: write
+
+concurrency:
+  group: version-dev
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    name: Version and package Dev
+    if: >-
+      github.event.pull_request.merged == true &&
+      (startsWith(github.event.pull_request.head.ref, 'feature/') ||
+       startsWith(github.event.pull_request.head.ref, 'fix/')) &&
+      !contains(github.event.pull_request.labels.*.name, 'backport')
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+    steps:
+      - name: Check out Dev
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Bump patch version
+        id: version
+        env:
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          existing_commit="$(
+            git log --format=%H --grep="after PR #${PR_NUMBER}$" -1
+          )"
+
+          if [[ -n "$existing_commit" ]]; then
+            if ! git merge-base --is-ancestor "$existing_commit" HEAD; then
+              echo "::error::Existing version commit is not part of Dev."
+              exit 1
+            fi
+            version="$(git show "${existing_commit}:VERSION" | tr -d '\n')"
+            git switch --detach "$existing_commit"
+          else
+            git fetch origin release:refs/remotes/origin/release
+            if git merge-base --is-ancestor "$MERGE_SHA" origin/release; then
+              echo "::error::PR #${PR_NUMBER} was already released without its PATCH bump."
+              exit 1
+            fi
+            version="$(node scripts/version.mjs bump patch --write)"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add VERSION
+            git commit -m "chore(version): bump to ${version} after PR #${PR_NUMBER}"
+            git push origin HEAD:dev
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - name: Build Dev artifact
+        env:
+          DEPLOY_ENVIRONMENT: dev
+        run: npm run build
+      - name: Upload Dev artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dev-v${{ steps.version.outputs.version }}-${{ github.run_id }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 14

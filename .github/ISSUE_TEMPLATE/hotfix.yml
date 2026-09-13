@@ -1,0 +1,23 @@
+name: Production hotfix
+description: Track an urgent production defect before creating its branch.
+title: "[Hotfix] "
+labels:
+  - "type:hotfix"
+body:
+  - type: markdown
+    attributes:
+      value: Assign this issue to a milestone, then branch `hotfix/<issue>-description` from `prod`.
+  - type: textarea
+    id: impact
+    attributes:
+      label: Production impact
+      description: Explain the active impact and why the normal release path is too slow.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Fix verification
+      description: Explain how the fix and rollback will be validated.
+    validations:
+      required: true

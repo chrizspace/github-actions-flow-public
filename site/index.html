@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="GitHub Actions branching and release workflow proof of concept">
+    <title>GitHub Actions Flow · {{ENVIRONMENT}}</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">GitHub Actions DevOps POC</p>
+      <h1>{{ENVIRONMENT}}</h1>
+      <p class="lead">
+        This immutable build demonstrates issue-driven development, automated
+        versioning, environment promotion, and GitHub Pages delivery.
+      </p>
+      <dl>
+        <div>
+          <dt>Version</dt>
+          <dd>v{{VERSION}}</dd>
+        </div>
+        <div>
+          <dt>Branch</dt>
+          <dd>{{BRANCH}}</dd>
+        </div>
+        <div>
+          <dt>Commit</dt>
+          <dd><code>{{COMMIT}}</code></dd>
+        </div>
+        <div>
+          <dt>Built</dt>
+          <dd>{{BUILT_AT}}</dd>
+        </div>
+      </dl>
+    </main>
+  </body>
+</html>

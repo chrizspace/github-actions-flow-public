@@ -1,0 +1,145 @@
+name: Promote to production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-production
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Approve and deploy Production
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out Release
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: release
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Select eligible release candidate
+        id: release
+        run: |
+          if [[ "$GITHUB_REF_NAME" != "release" ]]; then
+            echo "::error::Run this workflow from the release branch."
+            exit 1
+          fi
+
+          git fetch origin --tags prod:refs/remotes/origin/prod
+          rc_tag="$(git tag --list 'v*-rc.*' --sort=-v:refname | head -n 1)"
+          if [[ -z "$rc_tag" ]]; then
+            echo "::error::No release candidate tag exists."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$rc_tag" HEAD; then
+            echo "::error::$rc_tag is not part of the release branch."
+            exit 1
+          fi
+
+          version="${rc_tag#v}"
+          version="${version%-rc.*}"
+          tracked_version="$(tr -d '\n' < VERSION)"
+          if [[ "$version" != "$tracked_version" ]]; then
+            echo "::error::RC $rc_tag does not match VERSION $tracked_version."
+            exit 1
+          fi
+          milestone_number="$(
+            git tag -l "$rc_tag" --format='%(contents:subject)' |
+              sed -n 's/.*milestone #\([0-9][0-9]*\).*/\1/p'
+          )"
+          if [[ -z "$milestone_number" ]]; then
+            echo "::error::The RC tag does not identify its milestone."
+            exit 1
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "milestone=${milestone_number}" >> "$GITHUB_OUTPUT"
+      - name: Promote Release to Prod
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          git switch --force-create prod origin/prod
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            tag_sha="$(git rev-parse "v${VERSION}^{commit}")"
+            head_sha="$(git rev-parse HEAD)"
+            if [[ "$tag_sha" != "$head_sha" ]]; then
+              echo "::error::v${VERSION} exists but does not point to current Prod."
+              exit 1
+            fi
+            echo "v${VERSION} is already promoted; resuming publication."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            promotion_sha="$(
+              git log --format=%H --fixed-strings \
+                --grep="chore(release): promote v${VERSION} to production" -1
+            )"
+            if [[ -z "$promotion_sha" ]]; then
+              if git merge-base --is-ancestor release HEAD; then
+                echo "::error::Release is already in Prod without the expected promotion marker."
+                exit 1
+              fi
+              git merge --no-ff release -m "chore(release): promote v${VERSION} to production"
+              git push origin HEAD:prod
+              promotion_sha="$(git rev-parse HEAD)"
+            fi
+
+            if [[ "$promotion_sha" != "$(git rev-parse HEAD)" ]]; then
+              echo "::error::Prod advanced after the v${VERSION} promotion; refusing an old rerun."
+              exit 1
+            fi
+            promoted_version="$(git show "${promotion_sha}:VERSION" | tr -d '\n')"
+            if [[ "$promoted_version" != "$VERSION" ]]; then
+              echo "::error::Promotion commit contains VERSION $promoted_version, expected $VERSION."
+              exit 1
+            fi
+
+            git tag -a "v${VERSION}" "$promotion_sha" -m "Production release v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
+      - name: Generate release notes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MILESTONE_NUMBER: ${{ steps.release.outputs.milestone }}
+        run: node scripts/release-notes.mjs "$MILESTONE_NUMBER" release-notes.md
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "GitHub Release v${VERSION} already exists."
+          else
+            gh release create "v${VERSION}" \
+              --target prod \
+              --title "v${VERSION}" \
+              --notes-file release-notes.md \
+              --verify-tag
+          fi
+      - name: Build Production site
+        env:
+          DEPLOY_ENVIRONMENT: production
+        run: npm run build
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: dist
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

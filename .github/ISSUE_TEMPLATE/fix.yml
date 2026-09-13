@@ -1,0 +1,23 @@
+name: Fix
+description: Track a non-critical defect before creating its branch.
+title: "[Fix] "
+labels:
+  - "type:fix"
+body:
+  - type: markdown
+    attributes:
+      value: Assign this issue to a milestone before creating `fix/<issue>-description`.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the current and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide deterministic reproduction steps.
+    validations:
+      required: true

@@ -9,8 +9,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
   pull-requests: write
 
 concurrency:
@@ -27,7 +25,6 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: production-hotfix
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Check out Prod
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -74,19 +71,6 @@ jobs:
             git push origin "v${version}"
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-      - name: Build hotfix site
-        env:
-          DEPLOY_ENVIRONMENT: production-hotfix
-        run: npm run build
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
-        with:
-          path: dist
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
       - name: Open backport pull requests
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}

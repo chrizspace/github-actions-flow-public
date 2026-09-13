@@ -1,0 +1,73 @@
+name: Issue integration
+
+on:
+  issues:
+    types:
+      - closed
+
+permissions:
+  contents: write
+  actions: write
+  issues: read
+  pull-requests: write
+
+concurrency:
+  group: version-dev
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    name: Merge closed issue into Dev
+    if: >-
+      github.event.issue.pull_request == null &&
+      github.event.issue.milestone != null &&
+      (contains(github.event.issue.labels.*.name, 'type:feature') ||
+       contains(github.event.issue.labels.*.name, 'type:fix'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find matching open pull requests
+        id: pull-requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          prs="$(
+            gh pr list \
+              --base dev \
+              --state open \
+              --limit 100 \
+              --json number,headRefName,body |
+            jq -r --arg issue "$ISSUE_NUMBER" '
+                .[]
+                | select(
+                    ((.headRefName | startswith("feature/")) or
+                     (.headRefName | startswith("fix/"))) and
+                    (.body | test("(?i)(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+#?" + $issue + "\\b"))
+                  )
+                | .number
+              '
+          )"
+          count="$(grep -c . <<<"$prs" || true)"
+          if [[ "$count" -eq 0 ]]; then
+            echo "::notice::No open feature or fix pull request references issue #${ISSUE_NUMBER}."
+            exit 0
+          fi
+          if [[ "$count" -gt 1 ]]; then
+            echo "::error::Issue #${ISSUE_NUMBER} has multiple open feature/fix pull requests targeting Dev."
+            exit 1
+          fi
+          echo "number=${prs}" >> "$GITHUB_OUTPUT"
+
+      - name: Merge matching pull request
+        if: steps.pull-requests.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pull-requests.outputs.number }}
+        run: gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
+
+      - name: Refresh Dev Pages snapshot
+        if: steps.pull-requests.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run environment-pages.yml --ref dev -f source_ref=dev

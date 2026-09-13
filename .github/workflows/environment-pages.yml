@@ -8,6 +8,10 @@ on:
         required: true
         default: dev
         type: string
+      snapshot_path:
+        description: Optional versioned path in addition to the latest path
+        required: false
+        type: string
   push:
     branches:
       - 'feature/**'
@@ -87,6 +91,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REF_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref_name }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          SNAPSHOT_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.snapshot_path || '' }}
         run: |
           if [[ "$EVENT_NAME" == "pull_request_target" ]]; then
             page_path="previews/pr-${PR_NUMBER}"
@@ -106,6 +111,11 @@ jobs:
             rm -rf "$page_path"
             mkdir -p "$page_path"
             cp -R "$RUNNER_TEMP/snapshot/." "$page_path/"
+            if [[ -n "$SNAPSHOT_PATH" && "$SNAPSHOT_PATH" != "$page_path" ]]; then
+              rm -rf "$SNAPSHOT_PATH"
+              mkdir -p "$SNAPSHOT_PATH"
+              cp -R "$RUNNER_TEMP/snapshot/." "$SNAPSHOT_PATH/"
+            fi
           fi
 
           rm -rf index.html

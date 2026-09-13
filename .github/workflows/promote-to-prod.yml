@@ -1,7 +1,11 @@
 name: Promote to production
 
 on:
-  workflow_dispatch:
+  pull_request_target:
+    branches:
+      - prod
+    types:
+      - closed
 
 permissions:
   contents: write
@@ -16,35 +20,26 @@ concurrency:
 jobs:
   promote:
     name: Approve and deploy Production
+    if: >-
+      github.event.pull_request.merged == true &&
+      (github.event.pull_request.head.ref == 'release' ||
+       startsWith(github.event.pull_request.head.ref, 'release/'))
     runs-on: ubuntu-latest
     environment:
       name: production
     steps:
-      - name: Check out Release
+      - name: Check out Prod
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: release
+          ref: prod
           fetch-depth: 0
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
+
       - name: Select eligible release candidate
         id: release
         run: |
-          if [[ "$GITHUB_REF_NAME" != "release" ]]; then
-            echo "::error::Run this workflow from the release branch."
-            exit 1
-          fi
-
-          git fetch origin --tags prod:refs/remotes/origin/prod
-          rc_tag="$(git tag --list 'v*-rc.*' --sort=-v:refname | head -n 1)"
+          rc_tag="$(git tag --list 'v*-rc.*' --merged HEAD --sort=-v:refname | head -n 1)"
           if [[ -z "$rc_tag" ]]; then
-            echo "::error::No release candidate tag exists."
-            exit 1
-          fi
-          if ! git merge-base --is-ancestor "$rc_tag" HEAD; then
-            echo "::error::$rc_tag is not part of the release branch."
+            echo "::error::No release candidate tag exists on the merged Prod history."
             exit 1
           fi
 
@@ -66,54 +61,31 @@ jobs:
 
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "milestone=${milestone_number}" >> "$GITHUB_OUTPUT"
-      - name: Promote Release to Prod
+
+      - name: Tag production release
         env:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
-          git switch --force-create prod origin/prod
+          head_sha="$(git rev-parse HEAD)"
           if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
             tag_sha="$(git rev-parse "v${VERSION}^{commit}")"
-            head_sha="$(git rev-parse HEAD)"
             if [[ "$tag_sha" != "$head_sha" ]]; then
               echo "::error::v${VERSION} exists but does not point to current Prod."
               exit 1
             fi
-            echo "v${VERSION} is already promoted; resuming publication."
           else
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            promotion_sha="$(
-              git log --format=%H --fixed-strings \
-                --grep="chore(release): promote v${VERSION} to production" -1
-            )"
-            if [[ -z "$promotion_sha" ]]; then
-              if git merge-base --is-ancestor release HEAD; then
-                echo "::error::Release is already in Prod without the expected promotion marker."
-                exit 1
-              fi
-              git merge --no-ff release -m "chore(release): promote v${VERSION} to production"
-              git push origin HEAD:prod
-              promotion_sha="$(git rev-parse HEAD)"
-            fi
-
-            if [[ "$promotion_sha" != "$(git rev-parse HEAD)" ]]; then
-              echo "::error::Prod advanced after the v${VERSION} promotion; refusing an old rerun."
-              exit 1
-            fi
-            promoted_version="$(git show "${promotion_sha}:VERSION" | tr -d '\n')"
-            if [[ "$promoted_version" != "$VERSION" ]]; then
-              echo "::error::Promotion commit contains VERSION $promoted_version, expected $VERSION."
-              exit 1
-            fi
-
-            git tag -a "v${VERSION}" "$promotion_sha" -m "Production release v${VERSION}"
+            git tag -a "v${VERSION}" "$head_sha" -m "Production release v${VERSION}"
             git push origin "v${VERSION}"
           fi
+
       - name: Generate release notes
         env:
           GITHUB_TOKEN: ${{ github.token }}
           MILESTONE_NUMBER: ${{ steps.release.outputs.milestone }}
         run: node scripts/release-notes.mjs "$MILESTONE_NUMBER" release-notes.md
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -128,7 +100,11 @@ jobs:
               --notes-file release-notes.md \
               --verify-tag
           fi
+
       - name: Publish Production Pages snapshot
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run environment-pages.yml --ref dev -f source_ref=prod
+          VERSION: ${{ steps.release.outputs.version }}
+        run: gh workflow run environment-pages.yml --ref dev \
+          -f source_ref=prod \
+          -f snapshot_path="production/v${VERSION}"

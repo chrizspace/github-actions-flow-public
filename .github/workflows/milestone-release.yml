@@ -137,7 +137,10 @@ jobs:
       - name: Publish Release Pages snapshot
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run environment-pages.yml --ref dev -f source_ref=release
+          VERSION: ${{ steps.version.outputs.version }}
+        run: gh workflow run environment-pages.yml --ref dev \
+          -f source_ref=release \
+          -f snapshot_path="release/v${VERSION}-rc.1"
       - name: Generate release notes
         env:
           GITHUB_TOKEN: ${{ github.token }}

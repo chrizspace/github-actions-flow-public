@@ -84,7 +84,6 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" == "pull_request_target" ]]; then
             page_path="previews/pr-${PR_NUMBER}"
-            feature_path="features/${HEAD_REF//\//-}"
           elif [[ "$REF_NAME" == "prod" ]]; then
             page_path="production"
           elif [[ "$REF_NAME" == "dev" || "$REF_NAME" == "release" ]]; then
@@ -95,7 +94,6 @@ jobs:
 
           if [[ "$EVENT_NAME" == "pull_request_target" && "$ACTION" == "closed" ]]; then
             rm -rf "$page_path"
-            rm -rf "$feature_path"
           else
             rm -rf "$page_path"
             mkdir -p "$page_path"

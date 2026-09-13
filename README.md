@@ -31,10 +31,13 @@ flowchart LR
   through `production-hotfix`. It then opens labeled, no-bump backport PRs
   against `release` and `dev`.
 
-GitHub Pages has one canonical site per repository, so Dev and UAT are workflow
-artifacts rather than pretend public environments. Each artifact includes
-`build.json` and a page showing its exact version, source branch, commit, build
-time, and environment.
+GitHub Pages has one canonical site per repository. The `Environment Pages`
+workflow keeps separate snapshots under stable paths in that site: the
+`/production/`, `/dev/`, `/release/`, and feature pull-request previews under
+`/previews/pr-<number>/`. The root page links to all currently published
+snapshots. Each snapshot includes `build.json` and a page showing its exact
+version, source branch, commit, build time, and environment. A merged feature
+pull request removes its preview path.
 
 ## Repository layout
 
@@ -45,7 +48,7 @@ time, and environment.
 | `scripts/version.mjs` | Validates and advances `VERSION` |
 | `scripts/validate-pr.mjs` | Enforces branch, issue, milestone, and label policy |
 | `scripts/release-notes.mjs` | Builds categorized notes from milestone issues |
-| `.github/workflows/` | CI, Dev, UAT, Production, and hotfix automation |
+| `.github/workflows/` | CI, environment Pages, Dev, UAT, Production, and hotfix automation |
 | `scripts/setup-repository.sh` | Idempotent GitHub repository bootstrap |
 | `CONTRIBUTING.md` | Contributor and promotion runbook |
 
